@@ -1,0 +1,539 @@
+---
+title: "Dimension Reduction"
+author: "Yuting Sun"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r}
+#Load required libraries
+library(readr)
+library(tidyverse)
+library(stopwords)
+library(wordcloud)
+library(FactoMineR)
+library(factoextra)
+```
+## Task 1 Build the shape table
+
+```{r}
+#load the dataset
+ufo <- read.csv("data/nuforc_sightings.csv")
+```
+
+```{r}
+#Check country variations starting with 'U'
+ufo %>%
+  filter(startsWith(country, "U")) %>%
+  count(country, sort = TRUE)
+```
+Multiple entries for "USA" (e.g., "Usa", "usa") indicate data cleaning is needed.
+
+
+```{r}
+#Clean and standardize country data
+ufo %>%
+  mutate(country_upper = toupper(trimws(country))) %>%
+  filter(grepl("US|AMERICA|STATES|UNITED STATES|U.S.", country_upper)) %>%
+  count(country, sort = TRUE)
+
+
+```
+Should excluded ambiguous entries like "Bahamas/USA" to focus on mainland USA.
+also excluded U.S. Virgin Islands.
+
+
+```{r}
+#Verify no missing country values
+sum(is.na(ufo$country))
+
+#check missing values of state in the USA
+usa_no_state <- ufo %>%
+  filter((country == "USA" | country == "US") & (is.na(state) | state == "" | state == "Unkown"))
+
+nrow(usa_no_state)
+```
+
+```{r}
+# Filter for USA and check state completeness
+ufo_us <- ufo %>%
+  mutate(
+    country = toupper(trimws(country))
+  ) %>%
+  
+  filter(country == "USA")
+
+
+```
+
+```{r}
+# Filter for USA and check state completeness
+ufo_us %>%
+  count(country, sort = TRUE)
+
+```
+
+
+```{r}
+# Clean and summarize state data
+ufo_us %>%
+  count(state, sort = TRUE) %>%
+  head(100)
+
+```
+some enteies' state is not USA's state, and some did not use abbreviation, etc
+```{r}
+#Define valid U.S. states
+us_states <- c("AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+               "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+               "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+               "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+               "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY",
+               "DC")
+#Create state mapping (abbreviation to full name)
+state_mapping <- data.frame(
+  abbreviation = c("AL", "AK", "AZ", "AR", "CA", "CO", "CT", "DE", "FL", "GA",
+                   "HI", "ID", "IL", "IN", "IA", "KS", "KY", "LA", "ME", "MD",
+                   "MA", "MI", "MN", "MS", "MO", "MT", "NE", "NV", "NH", "NJ",
+                   "NM", "NY", "NC", "ND", "OH", "OK", "OR", "PA", "RI", "SC",
+                   "SD", "TN", "TX", "UT", "VT", "VA", "WA", "WV", "WI", "WY", "DC"),
+  full_name = c("Alabama", "Alaska", "Arizona", "Arkansas", "California", 
+                "Colorado", "Connecticut", "Delaware", "Florida", "Georgia",
+                "Hawaii", "Idaho", "Illinois", "Indiana", "Iowa", "Kansas",
+                "Kentucky", "Louisiana", "Maine", "Maryland", "Massachusetts",
+                "Michigan", "Minnesota", "Mississippi", "Missouri", "Montana",
+                "Nebraska", "Nevada", "New Hampshire", "New Jersey", "New Mexico",
+                "New York", "North Carolina", "North Dakota", "Ohio", "Oklahoma",
+                "Oregon", "Pennsylvania", "Rhode Island", "South Carolina",
+                "South Dakota", "Tennessee", "Texas", "Utah", "Vermont",
+                "Virginia", "Washington", "West Virginia", "Wisconsin", "Wyoming",
+                "District of Columbia")
+)
+```
+
+
+
+
+```{r}
+# unique state in ufo_us
+all_states_in_data <- unique(ufo_us$state)
+
+# match with state_mapping
+non_us_states <- all_states_in_data[!all_states_in_data %in% us_states]
+
+print("not US states：")
+print(non_us_states)
+
+
+ufo_us %>%
+  filter(state %in% non_us_states) %>%
+  count(state, sort = TRUE)
+```
+```{r}
+# Clean state data
+ufo_us_clean <- ufo_us %>%
+  mutate(
+    # tolower
+    state = trimws(tolower(state)),
+    
+    # transfer
+    state = case_when(
+      state == "montana" ~ "MT",
+      state == "new york" ~ "NY",
+      state == "ohio" ~ "OH",
+      state == "west virginia" ~ "WV",
+      state == "wisconsin" ~ "WI",
+      TRUE ~ toupper(state)  
+    )
+  ) %>%
+  # filter states not in the US
+  filter(state %in% us_states)
+
+# 
+print(paste("state count:", length(unique(ufo_us_clean$state))))
+
+# checking states
+unique(ufo_us_clean$state) %>% sort()
+```
+
+
+
+```{r}
+# data quality of shape
+unique(ufo_us_clean$shape)
+
+ufo_us_clean %>% 
+  count(shape, sort = TRUE)
+```
+
+```{r}
+# Is there NA, Null, trimming spaces/white space in shape column
+sum(is.na(ufo_us_clean$shape))
+sum(ufo_us_clean$shape == "", na.rm = TRUE)
+head(ufo_us_clean$shape, 20)
+```
+```{r}
+#Clean shape column
+ufo_us_clean_shape <- ufo_us_clean %>%
+  mutate(
+    
+    shape = tolower(shape),
+   
+    shape = trimws(shape),
+    
+   
+    shape = case_when(
+      is.na(shape) ~ "unknown",
+      shape == "" ~ "unknown",
+      TRUE ~ shape 
+    )
+  )
+
+
+ufo_us_clean_shape %>%
+  count(shape, sort = TRUE)
+```
+
+
+```{r}
+# Create shape-by-state frequency table
+shape_by_state <- ufo_us_clean_shape %>%
+  count(state, shape) %>%           
+  pivot_wider(
+    names_from = shape,             # shape-column
+    values_from = n,                      # count
+    values_fill = 0                       
+  )
+
+# Check dimensions and unique states
+head(shape_by_state)
+dim(shape_by_state)  
+unique(shape_by_state$state)
+
+# Identify state with most "Circle" sightings
+shape_by_state$state[which.max(shape_by_state$circle)]
+
+```
+There are 25 distinct shapes categories.
+CA reported the highest number of "Circle" sightings(1637).
+
+
+
+## Task 2 PCA on the shape table
+
+```{r}
+#convert counts to proporities
+shape_matrix <- shape_by_state %>%
+  column_to_rownames("state")
+state_totals <- rowSums(shape_matrix)
+shape_proportions <- shape_matrix / state_totals # Row-normalization
+head(rowSums(shape_proportions))
+```
+
+```{r}
+#Perform PCA
+pca_result <- prcomp(shape_proportions, scale. = TRUE, center = TRUE)
+
+#Summary of PCA results
+summary(pca_result)
+```
+
+```{r}
+#Create screen plot
+fviz_eig(pca_result, 
+         addlabels = TRUE, 
+         ylim = c(0, 50),
+         main = "Scree Plot: Variance Explained by Principal Components",
+         xlab = "Principal Components",
+         ylab = "Percentage of Explained Variance")
+```
+<br>
+The plot shows that the first few principal components explain a substantial portion of the variance.
+
+
+```{r}
+#Create scree plot
+fviz_pca_ind(pca_result,
+             col.ind = "contrib", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE, 
+             labelsize = 3,
+             pointsize = 2,
+             title = "PCA - States Colored by Contribution to PC1-PC2",
+             xlab = "PC1",
+             ylab = "PC2")
+```
+<br>
+Based on the scatterplot, there are no visible regional clusters.  
+However, the plot clearly shows two significant outliers, DC and ND, which have unique UFO shape distributions compared to all other states.
+
+```{r}
+# Loadings for PC1 and PC2
+loadings <- pca_result$rotation[, 1:2]
+loadings_df <- as.data.frame(loadings)
+loadings_df$shape <- rownames(loadings_df)
+```
+
+
+```{r}
+# Bar plots for loadings
+ggplot(loadings_df, aes(x = reorder(shape, PC1), y = PC1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "PC1 Loadings: Shape Contributions",
+       x = "UFO Shape",
+       y = "Loading on PC1") +
+  theme_minimal()
+```
+
+```{r}
+ggplot(loadings_df, aes(x = reorder(shape, PC2), y = PC2)) +
+  geom_bar(stat = "identity", fill = "coral") +
+  coord_flip() +
+  labs(title = "PC2 Loadings: Shape Contributions",
+       x = "UFO Shape",
+       y = "Loading on PC2") +
+  theme_minimal()
+```
+
+
+```{r}
+#Biplot
+fviz_pca_biplot(pca_result,
+                repel = TRUE,
+                col.var = "red", 
+                col.ind = "blue", 
+                title = "PCA Biplot: States and UFO Shapes",
+                xlab = "PC1",
+                ylab = "PC2")
+```
+
+```{r}
+#Contribution plots for PC1
+fviz_contrib(pca_result, choice = "var", axes = 1, top = 10,
+             title = "Top 10 Shapes Contributing to PC1")
+```
+<br>
+Based on the fviz_contrib() bar plot, the shapes that contribute the most to PC1 are:Triangle, Light and Diamond.
+
+```{r}
+#Contribution plots for PC2
+fviz_contrib(pca_result, choice = "var", axes = 2, top = 10,
+             title = "Top 10 Shapes Contributing to PC2")
+```
+<br>
+Based on the fviz_contrib() bar plot, the shapes that contribute the most to PC1 are:Unkown, Orb and Circle.
+
+## Task 3 Clean and tokenize the summaries
+
+
+```{r}
+#Clean summary
+ufo_us_clean_shape <- ufo_us_clean_shape %>%
+  mutate(
+    summary_clean = ifelse(is.na(summary) | summary == "", NA, summary),  # Handle NA or empty
+    summary_clean = tolower(summary),  # Convert to lowercase
+    summary_clean = gsub("[^[ -~]]", "", summary_clean),  # Remove non-ASCII characters
+    summary_clean = trimws(summary_clean),  # Trim whitespace from edges
+    summary_clean = gsub("\\s+", " ", summary_clean)  # Replace repeated internal whitespace with single space
+  )
+
+print(head(ufo_us_clean_shape$summary_clean, 10))  # Debug output
+  
+```
+
+
+
+
+
+```{r}
+    #install.packages("tidytext")
+```
+
+
+
+```{r}
+# Tokenize the cleaned summaries into words using tidytext
+library(tidytext)
+tokens <- ufo_us_clean_shape %>%
+  unnest_tokens(word, summary_clean)  # Break into array of words
+
+# Generate a table showing the most frequent words (top 20 for brevity)
+word_freq <- tokens %>%
+  count(word, sort = TRUE)
+
+head(word_freq, 20)
+```
+
+```{r}
+# Create a word cloud
+wordcloud(words = word_freq$word[1:100], freq = word_freq$n[1:100], 
+          min.freq = 100, random.order = FALSE, colors = brewer.pal(8, "Dark2"))
+```
+<br>
+In this initial output, the most frequent words are mostly common, such as "the", "a", "in", "and", "of" etc. These do not provide much insight into the UFO sightings themselves, as they are stopwords that appear in almost any English text.
+
+
+```{r}
+# Remove stopwords using the stopwords package
+stop_words <- stopwords("en")  # Get English stopwords
+
+tokens_no_stop <- tokens %>%
+  filter(!word %in% stop_words)  # Remove stopwords
+
+# Re-generate the frequency table (top 20)
+word_freq_no_stop <- tokens_no_stop %>%
+  count(word, sort = TRUE)
+
+head(word_freq_no_stop, 20)
+```
+
+```{r}
+# Re-make the word cloud without stopwords
+wordcloud(words = word_freq_no_stop$word[1:100], freq = word_freq_no_stop$n[1:100], 
+          min.freq = 100, random.order = FALSE, colors = brewer.pal(8, "Dark2"))
+
+
+```
+<br>
+After stopword removal, the words that feel most characteristic of these reports include terms like  "lights", "light", "sky", "object","bright", "moving", etc. These suggest common themes in descriptions, such as visual appearances (colors, brightness) and behaviors (movement, hovering) of the sighted objects.
+
+## Task 4 Build the keyword table and repeat PCA
+
+```{r}
+# Define a vocabulary of the top 100 most frequent words from cleaned summaries
+vocab <- word_freq_no_stop %>%
+  filter(nchar(word) >= 3) %>%  # At least 3 characters
+  slice(1:100) %>%  # Top 100
+  pull(word)
+```
+
+```{r}
+# Create a wide table: state-by-keyword counts
+# First, filter tokens to only include words in vocab
+tokens_vocab <- tokens_no_stop %>%
+  filter(word %in% vocab)
+
+# count per state and pivot wider
+keyword_by_state <- tokens_vocab %>%
+  group_by(state, word) %>%
+  summarise(n = n(), .groups = "drop") %>%
+  pivot_wider(
+    names_from = word,
+    values_from = n,
+    values_fill = 0
+  )
+```
+
+
+```{r}
+#show dimensions and head
+dim(keyword_by_state)
+head(keyword_by_state)
+```
+
+```{r}
+#PCA
+#convert counts to proporities
+keyword_matrix <- keyword_by_state %>%
+  column_to_rownames("state")
+state_totals_keywords <- rowSums(keyword_matrix)
+keyword_proportions <- keyword_matrix / state_totals_keywords
+head(rowSums(keyword_proportions))
+```
+
+```{r}
+# Perform PCA
+pca_result_keywords <- prcomp(keyword_proportions, scale. = TRUE, center = TRUE)
+summary(pca_result_keywords)
+```
+
+```{r}
+# Scree plot
+fviz_eig(pca_result_keywords, 
+         addlabels = TRUE, 
+         ylim = c(0, 50),
+         main = "Scree Plot: Variance Explained by Principal Components (Keywords)",
+         xlab = "Principal Components",
+         ylab = "Percentage of Explained Variance")
+```
+<br>
+The scree plot shows that the first few principal components explain a substantial portion of the variance, similar to the shape PCA.
+
+```{r}
+# Scatterplot of states on PC1-PC2
+fviz_pca_ind(pca_result_keywords,
+             col.ind = "contrib", 
+             gradient.cols = c("#00AFBB", "#E7B800", "#FC4E07"),
+             repel = TRUE, 
+             labelsize = 3,
+             pointsize = 2,
+             title = "PCA - States Colored by Contribution to PC1-PC2 (Keywords)",
+             xlab = "PC1",
+             ylab = "PC2")
+```
+<br>
+Similar to the shape PCA, there may be no strong regional clusters, but outliers like DC, HI appear again if their keyword usage are unique. Other states could cluster based on similar descriptive language in reports.
+
+```{r}
+# Examine loadings for PC1 and PC2
+loadings_keywords <- pca_result_keywords$rotation[, 1:2]
+loadings_df_keywords <- as.data.frame(loadings_keywords)
+loadings_df_keywords$word <- rownames(loadings_df_keywords)
+```
+```{r}
+# Bar plot for PC1 loadings
+ggplot(loadings_df_keywords, aes(x = reorder(word, PC1), y = PC1)) +
+  geom_bar(stat = "identity", fill = "steelblue") +
+  coord_flip() +
+  labs(title = "PC1 Loadings: Keyword Contributions",
+       x = "Keyword",
+       y = "Loading on PC1") +
+  theme_minimal()
+```
+```{r}
+# Bar plot for PC2 loadings
+ggplot(loadings_df_keywords, aes(x = reorder(word, PC2), y = PC2)) +
+  geom_bar(stat = "identity", fill = "coral") +
+  coord_flip() +
+  labs(title = "PC2 Loadings: Keyword Contributions",
+       x = "Keyword",
+       y = "Loading on PC2") +
+  theme_minimal()
+```
+
+```{r}
+# Biplot
+fviz_pca_biplot(pca_result_keywords,
+                repel = TRUE,
+                col.var = "red", 
+                col.ind = "blue", 
+                title = "PCA Biplot: States and Keywords",
+                xlab = "PC1",
+                ylab = "PC2")
+```
+
+
+```{r}
+# Top 10 contributing to PC1
+fviz_contrib(pca_result_keywords, choice = "var", axes = 1, top = 10,
+             title = "Top 10 Keywords Contributing to PC1")
+```
+<br>
+Based on the fviz_contrib() bar plot, keywords contribute the most to PC1 are:obversed, sighting, line.
+
+```{r}
+# Top 10 contributing to PC2
+fviz_contrib(pca_result_keywords, choice = "var", axes = 2, top = 10,
+             title = "Top 10 Keywords Contributing to PC2")
+```
+<br>
+Based on the fviz_contrib() bar plot, keywords contribute the most to PC2 are: bright, craft, shaped
+
+Compare with shape-based PCA:
+Similarities: Both analyses identify DC and HI as outliers, suggesting that their UFO sighting reports may feature distinctive characteristics. This could be attributed to DC not being a traditional state but a federal district and HI being far away from USA mainland, which might influence the nature and reporting of observations. Even with normalization across states, these unique aspects persist, indicating inherent differences in thieir data.
+Differences: Keywords provide more nuanced patterns (e.g., colors, movements) beyond just shapes, potentially revealing thematic differences in how sightings are described across states, whereas shapes are more categorical.
